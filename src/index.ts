@@ -5,6 +5,15 @@ import PlexAPI from "./plex";
 import OverseerrAPI from "./overseerr";
 import _ from "lodash";
 
+// --- SILENCE ROGUE OBJECT LOGS ---
+const originalLog = console.log;
+console.log = function (...args) {
+    // If the log is a massive raw object, drop it. Only allow plain text strings.
+    if (typeof args[0] === 'object' && args[0] !== null) return;
+    originalLog.apply(console, args);
+};
+// ---------------------------------
+
 const MS_24_HOURS = 86400000;
 // Environment toggle: Set DRY_RUN=true in the .env file
 const isDryRun = process.env.DRY_RUN === 'true';
