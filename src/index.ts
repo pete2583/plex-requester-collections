@@ -1,13 +1,13 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import PlexAPI, { PlexMediaDetails } from "./plex";
+import PlexAPI from "./plex";
 import OverseerrAPI from "./overseerr";
 import _ from "lodash";
-import moment from "moment";
 
-const TAG_PREFIX_REQUESTER = "";
 const MS_24_HOURS = 86400000;
+// Environment toggle: Set DRY_RUN=true in the .env file
+const isDryRun = process.env.DRY_RUN === 'true';
 
 // Start after a delay, if set.
 const startDelay =
@@ -17,8 +17,6 @@ const startDelay =
 
 setTimeout(() => {
 	if (process.env.FEATURE_RUN_ONCE !== "1") {
-		// Feature flag to disable running every 24h. For development. Defaults to running every 24h.
-		// Run every 24 h.
 		setInterval(app, MS_24_HOURS);
 	}
 	app();
@@ -26,36 +24,34 @@ setTimeout(() => {
 
 // Main Function
 const app = async function () {
+    console.log(`[INIT] Starting Plex Requester Collections...`);
+    if (isDryRun) {
+        console.log(`[INIT] 🚨 DRY RUN MODE ENABLED: No changes will be written to Plex 🚨\n`);
+    }
+
 	// Get all the requests from Overseerr.
 	const requests = await OverseerrAPI.getAllRequests("all");
-
-	// Get the Plex library sections. It's not easy to get the section ID for a given media item,
-	// so it's easier to start with the sections and work down.
 	const plexSections = await PlexAPI.getSections();
 
-	// Is the optional list of library sections to include set in .env?
-	const includeSections: Array<string> = process.env.PLEX_INCLUDE_SECTIONS
+	const includeSections = process.env.PLEX_INCLUDE_SECTIONS
 		? process.env.PLEX_INCLUDE_SECTIONS.split(",")
 		: undefined;
 
-	// Only do included sections if include list is set in .env
 	_.remove(plexSections, (value) => {
 		return (
-			includeSections && includeSections.indexOf(<string>value.key) === -1
+			includeSections && includeSections.indexOf(value.key) === -1
 		);
 	});
 
 	// Cycle through library sections.
 	for (let i = 0; i < plexSections.length; i++) {
-		// ID of current library section.
-		const sectionId = parseInt(<string>plexSections[i]?.key);
+		const sectionId = parseInt(plexSections[i]?.key);
 
 		console.log("-----------------------------------------------");
 		console.log(`Starting Section: ${plexSections[i]?.title}`);
 		console.log("-----------------------------------------------");
 
-		// Media type of current section (e.g. TV vs Movie)
-		const sectionType = <string>plexSections[i]?.type;
+		const sectionType = plexSections[i]?.type;
 		const sectionTypeCode = PlexAPI.getPlexTypeCode(sectionType);
 
 		// We only support Movies and TV Shows for now.
@@ -68,34 +64,17 @@ const app = async function () {
 		const mediaItems = await PlexAPI.getAllItems(sectionId);
 		let collections = await PlexAPI.getCollections(sectionId);
 
-		// Get all the Radarr/Sonarr items based on media type, if we have the credentials. Otherwise undefined.
-		const radarrSonarrItems = await getRadarrSonarrItems(sectionType);
-
 		// Reset cached Plex labels since we're starting a new section.
 		await PlexAPI.getLabels(sectionId);
 
-		// Cycle through each media item in the library section, tag it with the requester.
+		// Cycle through each media item in the library section
 		for (let j = 0; j < mediaItems.length; j++) {
-			const start = Date.now();
-
-			let plexUsername: string;
-
-			const mediaId = parseInt(<string>mediaItems[j].ratingKey);
-
-			// Get a more detailed version of the media item.
+			const mediaId = parseInt(mediaItems[j].ratingKey);
 			const mediaItem = await PlexAPI.getSingleItem(mediaId);
 
-			// The library has changed while we're processing.... skip over this media item.
 			if (!mediaItem) {
 				continue;
 			}
-
-			// Get the item from Radarr/Sonarr, if it exists.
-			let radarrSonarrItem = getSingleRadarrSonarrItem(
-				sectionType,
-				mediaItem,
-				radarrSonarrItems
-			);
 
 			// Does a requester entry exist for this media item?
 			const request = _.find(
@@ -103,113 +82,42 @@ const app = async function () {
 				(item) => item?.media?.ratingKey === mediaItem?.ratingKey
 			);
 
-			// No request object found for this media item, mark it as such.
+			// If no request was found in Seerr, ignore it entirely (No metric bloat)
 			if (!request) {
-				// Print to console.
-				console.log(`${mediaItem.title} - Not Requested`);
-
-				// Mark the item as not requested.
-				await PlexAPI.addLabelToItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_NOT_REQUESTED
-				);
-
-				// Handle Radarr/Sonarr if applicable.
-				if (radarrSonarrItem && sectionType === "movie") {
-					// Mark the item as not requested.
-					radarrSonarrItem = await RadarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_NOT_REQUESTED,
-						<RadarrMediaDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-				} else if (radarrSonarrItem && sectionType === "show") {
-					// Tag the item with the requester username.
-					radarrSonarrItem = await SonarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_NOT_REQUESTED,
-						<SonarrSeriesDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-				}
+				continue;
 			}
-			// We found a request
-			else {
-				// Remove not requested tag in case it was added before.
-				await PlexAPI.removeLabelFromItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_NOT_REQUESTED
-				);
 
-				// Handle Radarr/Sonarr if applicable.
-				if (radarrSonarrItem && sectionType === "movie") {
-					// Remove not requested tag in case it was added before.
-					radarrSonarrItem = await RadarrAPI.removeTagFromMediaItem(
-						radarrSonarrItem?.id,
-						TAG_NOT_REQUESTED,
-						<RadarrMediaDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-				} else if (radarrSonarrItem && sectionType === "show") {
-					// Remove not requested tag in case it was added before.
-					radarrSonarrItem = await SonarrAPI.removeTagFromMediaItem(
-						radarrSonarrItem?.id,
-						TAG_NOT_REQUESTED,
-						<SonarrSeriesDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-				}
+			// We found a request!
+			const plexUsername = request?.requestedBy?.plexUsername;
+			if (!plexUsername) continue;
 
-				// Init some values we're going to need.
-				plexUsername = request?.requestedBy?.plexUsername;
-				const displayName = request?.requestedBy?.displayName;
-				const requesterTagValue = TAG_PREFIX_REQUESTER + plexUsername;
+			const mediaTitle = mediaItem.title;
 
-				// Print to console.
-				console.log(
-					`${mediaItem.title} - Requested by ${plexUsername}`
-				);
+			if (isDryRun) {
+				// 🔍 DRY RUN MODE: Prints to terminal logs only
+				console.log(`[DRY RUN] MATCH FOUND:`);
+				console.log(`   ➔ Media: "${mediaTitle}"`);
+				console.log(`   ➔ Action: Would apply label [ ${plexUsername} ]`);
+				console.log(`   ➔ Action: Would assign to Smart Collection [ ${plexUsername} ]\n`);
+				continue; // Skip the actual database writes
+			}
 
-				// Tag the media item with requester username.
+			// 🚀 LIVE MODE: Actual Plex database API writes
+			console.log(`[LIVE] ${mediaTitle} - Requested by ${plexUsername}`);
+			
+			try {
+				// Tag the media item with the raw requester username
 				await PlexAPI.addLabelToItem(
 					sectionId,
 					sectionTypeCode,
 					mediaId,
-					requesterTagValue
+					plexUsername
 				);
-
-				// Handle Radarr/Sonarr if applicable.
-				if (radarrSonarrItem && sectionType === "movie") {
-					// Tag the media item with requester username.
-					radarrSonarrItem = await RadarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						requesterTagValue,
-						<RadarrMediaDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-				} else if (radarrSonarrItem && sectionType === "show") {
-					// Tag the media item with requester username.
-					radarrSonarrItem = await SonarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						requesterTagValue,
-						<SonarrSeriesDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-				}
 
 				// Feature flag to turn off the creation of smart collections.
 				if (process.env.FEATURE_CREATE_COLLECTIONS !== "0") {
-					// This is what the smart collection should be called.
-					let collectionTitle: string;
-					if (displayName) {
-						collectionTitle =
-							sectionType == "movie"
-								? COLL_TITLE_PREFIX_MOVIE + displayName
-								: COLL_TITLE_PREFIX_SHOW + displayName;
-					} else {
-						collectionTitle =
-							sectionType == "movie"
-								? COLL_TITLE_PREFIX_MOVIE + plexUsername
-								: COLL_TITLE_PREFIX_SHOW + plexUsername;
-					}
+					
+					const collectionTitle = plexUsername;
 
 					// Does the smart collection already exist?
 					const collection = _.find(
@@ -217,443 +125,32 @@ const app = async function () {
 						(item) => item?.title === collectionTitle
 					);
 
-					// If collection exists with this title, assume it's set up correctly and we don't need to do anything else.
-					// If collection does not exist with this title, create it and tag is with owner label.
+					// If collection does not exist, create it querying the new label.
 					if (!collection) {
-						// Get the numeric ID of the label we're using right now.
 						const mediaLabelKey = await PlexAPI.getKeyForLabel(
 							sectionId,
-							requesterTagValue
+							plexUsername
 						);
 
-						// Create the new smart collection
-						const createCollResult =
-							await PlexAPI.createSmartCollection({
-								sectionId: sectionId,
-								title: collectionTitle,
-								titleSort: COLL_SORT_PREFIX + collectionTitle, // TO DO Move prefix to env option.
-								itemType: sectionTypeCode,
-								sort: COLL_DEFAULT_SORT, //date added descending
-								query: "label=" + mediaLabelKey
-							});
-
-						// Only continue if creating the collection seems to have worked.
-						if (createCollResult) {
-							await PlexAPI.addLabelToItem(
-								sectionId,
-								PlexAPI.getPlexTypeCode(
-									<string>createCollResult.type
-								),
-								parseInt(<string>createCollResult.ratingKey),
-								TAG_PREFIX_OWNER + plexUsername
-							);
-						}
+						const createCollResult = await PlexAPI.createSmartCollection({
+							sectionId: sectionId,
+							title: collectionTitle,
+							titleSort: collectionTitle, 
+							itemType: sectionTypeCode,
+							sort: "addedAt:desc", // default sort
+							query: "label=" + mediaLabelKey
+						});
 
 						// Update list of collections we're working with now that we've added one.
 						collections = await PlexAPI.getCollections(sectionId);
-
-						// Print to console.
-						console.log(" -> Smart Collection created");
+						console.log(`   -> Smart Collection [ ${collectionTitle} ] created`);
 					}
 				}
-			}
-
-			// Now let's start looking at watch history with Tautulli.
-			// Only continue if we have the right credentials.
-
-			// Handle Radarr items.
-			if (
-				sectionType === "movie" &&
-				radarrSonarrItem &&
-				process.env.TAUTULLI_URL &&
-				process.env.TAUTULLI_API_KEY
-			) {
-				// Remove tags from previous sessions in order to re-process.
-				radarrSonarrItem = await RadarrAPI.removeTagFromMediaItem(
-					radarrSonarrItem?.id,
-					TAG_STALE_REQUEST,
-					<RadarrMediaDetails>radarrSonarrItem
-				) || radarrSonarrItem;
-				radarrSonarrItem = await RadarrAPI.removeTagFromMediaItem(
-					radarrSonarrItem?.id,
-					TAG_OTHERS_WATCHING,
-					<RadarrMediaDetails>radarrSonarrItem
-				) || radarrSonarrItem;
-				radarrSonarrItem = await RadarrAPI.removeTagFromMediaItem(
-					radarrSonarrItem?.id,
-					TAG_REQUESTER_WATCHED,
-					<RadarrMediaDetails>radarrSonarrItem
-				) || radarrSonarrItem;
-				await PlexAPI.removeLabelFromItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_STALE_REQUEST
-				);
-				await PlexAPI.removeLabelFromItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_OTHERS_WATCHING
-				);
-				await PlexAPI.removeLabelFromItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_REQUESTER_WATCHED
-				);
-
-				// Get all the history sessions for this media item.
-				const histories = await TautulliAPI.getAllHistory({
-					section_id: sectionId,
-					rating_key: mediaId,
-					order_column: "date",
-					order_dir: "desc"
-				});
-
-				// Filter history sessions to look at everyone expect the requester.
-				const filteredHistories_others = _.filter(
-					histories,
-					(session: TautulliHistoryDetails) =>
-						session?.user !== plexUsername
-				);
-				// When was the last time someone other than the requester watched this?
-				const lastWatchedDate_others =
-					filteredHistories_others && filteredHistories_others.length
-						? filteredHistories_others[0].date * 1000 // Convert from seconds to milliseconds
-						: 0;
-
-				// Have people other then the requester watched the item within the stale viewing threshold?
-				if (
-					moment(lastWatchedDate_others) > STALE_VIEW_DATE_THRESHOLD
-				) {
-					radarrSonarrItem = await RadarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_OTHERS_WATCHING,
-						<RadarrMediaDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-					await PlexAPI.addLabelToItem(
-						sectionId,
-						sectionTypeCode,
-						mediaId,
-						TAG_OTHERS_WATCHING
-					);
-
-					// Print to console.
-					console.log(" -> Non-requester(s) watching");
-				}
-
-				// Filter history sessions to look at just requester user.
-				const filteredHistories_requester = _.filter(
-					histories,
-					(session: TautulliHistoryDetails) =>
-						session?.user === plexUsername
-				);
-				// Check if requester has fully watched it.
-				const watchedSession = _.find(
-					filteredHistories_requester,
-					(session: TautulliHistoryDetails) =>
-						session?.watched_status === 1
-				);
-
-				// We have evidence that the requester has fully watched the media item.
-				if (watchedSession) {
-					// Add the tag to the media item in Radarr indicating that the requester has watched the item.
-					radarrSonarrItem = await RadarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_REQUESTER_WATCHED,
-						<RadarrMediaDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-					await PlexAPI.addLabelToItem(
-						sectionId,
-						sectionTypeCode,
-						mediaId,
-						TAG_REQUESTER_WATCHED
-					);
-
-					// Print to console.
-					console.log(" -> Watched by requester");
-				}
-
-				// When was the last time the requester watched this?
-				const lastWatchedDate_requester =
-					filteredHistories_requester &&
-					filteredHistories_requester.length
-						? filteredHistories_requester[0].date * 1000 // Convert from seconds to milliseconds
-						: 0;
-
-				// If the media item was downloaded more than 6 months ago, and no one watched in the last 3 months, tag it as stale.
-				if (
-					moment(mediaItem?.addedAt * 1000) <
-						STALE_ADDED_DATE_THRESHOLD &&
-					moment(lastWatchedDate_requester) <
-						STALE_VIEW_DATE_THRESHOLD &&
-					moment(lastWatchedDate_others) < STALE_VIEW_DATE_THRESHOLD
-				) {
-					radarrSonarrItem = await RadarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_STALE_REQUEST,
-						<RadarrMediaDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-					await PlexAPI.addLabelToItem(
-						sectionId,
-						sectionTypeCode,
-						mediaId,
-						TAG_STALE_REQUEST
-					);
-
-					// Print to console.
-					console.log(" -> Stale request");
-				}
-			}
-			// Handle Sonarr items.
-			else if (
-				sectionType === "show" &&
-				radarrSonarrItem &&
-				process.env.TAUTULLI_URL &&
-				process.env.TAUTULLI_API_KEY
-			) {
-				// Remove tags from previous sessions in order to re-process.
-				radarrSonarrItem = await SonarrAPI.removeTagFromMediaItem(
-					radarrSonarrItem?.id,
-					TAG_STALE_REQUEST,
-					<SonarrSeriesDetails>radarrSonarrItem
-				) || radarrSonarrItem;
-				radarrSonarrItem = await SonarrAPI.removeTagFromMediaItem(
-					radarrSonarrItem?.id,
-					TAG_OTHERS_WATCHING,
-					<SonarrSeriesDetails>radarrSonarrItem
-				) || radarrSonarrItem;
-				radarrSonarrItem = await SonarrAPI.removeTagFromMediaItem(
-					radarrSonarrItem?.id,
-					TAG_REQUESTER_WATCHED,
-					<SonarrSeriesDetails>radarrSonarrItem
-				) || radarrSonarrItem;
-				await PlexAPI.removeLabelFromItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_STALE_REQUEST
-				);
-				await PlexAPI.removeLabelFromItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_OTHERS_WATCHING
-				);
-				await PlexAPI.removeLabelFromItem(
-					sectionId,
-					sectionTypeCode,
-					mediaId,
-					TAG_REQUESTER_WATCHED
-				);
-
-				// Get all the history sessions for this media item.
-				const histories = await TautulliAPI.getAllHistory({
-					section_id: sectionId,
-					grandparent_rating_key: mediaId,
-					order_column: "date",
-					order_dir: "desc"
-				});
-
-				// Filter history sessions to look at everyone expect the requester.
-				const filteredHistories_others = _.filter(
-					histories,
-					(session: TautulliHistoryDetails) =>
-						session?.user !== plexUsername
-				);
-				// When was the last time someone other than the requester watched this?
-				const lastWatchedDate_others =
-					filteredHistories_others && filteredHistories_others.length
-						? _.first(filteredHistories_others).date * 1000 // Convert from seconds to milliseconds
-						: 0;
-
-				// Have people other then the requester watched the item within the stale viewing threshold?
-				if (
-					moment(lastWatchedDate_others) > STALE_VIEW_DATE_THRESHOLD
-				) {
-					radarrSonarrItem = await SonarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_OTHERS_WATCHING,
-						<SonarrSeriesDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-					await PlexAPI.addLabelToItem(
-						sectionId,
-						sectionTypeCode,
-						mediaId,
-						TAG_OTHERS_WATCHING
-					);
-
-					// Print to console.
-					console.log(" -> Non-requester(s) watching");
-				}
-
-				// Filter history sessions to look at just requester user.
-				const filteredHistories_requester = _.filter(
-					histories,
-					(session: TautulliHistoryDetails) =>
-						session?.user === plexUsername
-				);
-
-				// Check if requester has fully watched it.
-				const watchedHistories = _.filter(filteredHistories_requester, {
-					watched_status: 1
-				});
-
-				// Make a list of unique episodes that have been fully watched.
-				const uniqueEpisodeHistories = _.uniqBy(
-					watchedHistories,
-					"rating_key"
-				);
-
-				// Has the user watched all the episodes, and have all the current episodes been downloaded?
-				if (
-					uniqueEpisodeHistories?.length ===
-						(<SonarrSeriesDetails>radarrSonarrItem)?.statistics
-							?.episodeCount &&
-					(<SonarrSeriesDetails>radarrSonarrItem)?.statistics
-						?.percentOfEpisodes === 100
-				) {
-					// Tag the media item.
-					radarrSonarrItem = await SonarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_REQUESTER_WATCHED,
-						<SonarrSeriesDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-					await PlexAPI.addLabelToItem(
-						sectionId,
-						sectionTypeCode,
-						mediaId,
-						TAG_REQUESTER_WATCHED
-					);
-
-					// Print to console.
-					console.log(" -> Watched by requester");
-				}
-
-				// When was the last time the requester watched this?
-				const lastWatchedDate_requester =
-					filteredHistories_requester &&
-					filteredHistories_requester.length
-						? filteredHistories_requester[0].date * 1000 // Convert from seconds to milliseconds
-						: 0;
-
-				// If the media item was downloaded more than 6 months ago, and the requester (OR ANYONE ELSE) hasn't watched in the last 3 months, tag it as stale.
-				if (
-					moment(mediaItem?.addedAt * 1000) <
-						STALE_ADDED_DATE_THRESHOLD &&
-					moment(lastWatchedDate_requester) <
-						STALE_VIEW_DATE_THRESHOLD &&
-					moment(lastWatchedDate_others) < STALE_VIEW_DATE_THRESHOLD
-				) {
-					radarrSonarrItem = await SonarrAPI.addTagToMediaItem(
-						radarrSonarrItem?.id,
-						TAG_STALE_REQUEST,
-						<SonarrSeriesDetails>radarrSonarrItem
-					) || radarrSonarrItem;
-					await PlexAPI.addLabelToItem(
-						sectionId,
-						sectionTypeCode,
-						mediaId,
-						TAG_STALE_REQUEST
-					);
-
-					// Print to console.
-					console.log(" -> Stale request");
-				}
-			}
-
-			const end = Date.now();
-			debugPerformance(` -> Completed in: ${end - start} ms`);
-		}
-
-		console.log("Done Section.");
-	}
-
-	console.log("Done, Done, Done.");
-};
-
-const getRadarrSonarrItems = async function (
-	sectionType: string
-): Promise<Array<RadarrMediaDetails | SonarrSeriesDetails>> {
-	if (
-		sectionType === "movie" &&
-		process.env.RADARR_URL &&
-		process.env.RADARR_API_KEY
-	) {
-		return await RadarrAPI.getMediaItems();
-	} else if (
-		sectionType === "show" &&
-		process.env.SONARR_URL &&
-		process.env.SONARR_API_KEY
-	) {
-		return await SonarrAPI.getMediaItems();
-	}
-
-	return undefined;
-};
-
-const getSingleRadarrSonarrItem = function (
-	sectionType: string,
-	plexMediaObject: PlexMediaDetails,
-	radarSonarrItems: Array<RadarrMediaDetails | SonarrSeriesDetails>
-): RadarrMediaDetails | SonarrSeriesDetails {
-	if (
-		sectionType === "movie" &&
-		process.env.RADARR_URL &&
-		process.env.RADARR_API_KEY
-	) {
-		// Get the TMDB ID so we can find the Radarr item.
-		if (
-			plexMediaObject &&
-			plexMediaObject.Guid &&
-			plexMediaObject.Guid.length
-		) {
-			// Looking for something like { "id": "tmdb://4263108" }.
-			const idObj = _.find(
-				plexMediaObject.Guid,
-				(val) => val && val.id && _.startsWith(val.id, "tmdb")
-			);
-			if (idObj) {
-				const tmdbId = parseInt(_.last(idObj.id.split("//")));
-
-				return <RadarrMediaDetails>(
-					_.find(radarSonarrItems, { tmdbId: tmdbId })
-				);
+			} catch (error) {
+				console.error(`[ERROR] Failed to update ${mediaTitle}:`, error);
 			}
 		}
-	} else if (
-		sectionType === "show" &&
-		process.env.SONARR_URL &&
-		process.env.SONARR_API_KEY
-	) {
-		// Get the TVDB ID so we can find the Sonarr item.
-		if (
-			plexMediaObject &&
-			plexMediaObject.Guid &&
-			plexMediaObject.Guid.length
-		) {
-			// Looking for something like { "id": "tvdb://4263108" }.
-			const idObj = _.find(
-				plexMediaObject.Guid,
-				(val) => val && val.id && _.startsWith(val.id, "tvdb")
-			);
-			if (idObj) {
-				const tvdbId = parseInt(_.last(idObj.id.split("//")));
-
-				return <SonarrSeriesDetails>(
-					_.find(radarSonarrItems, { tvdbId: tvdbId })
-				);
-			}
-		}
+		console.log(`Done Section: ${plexSections[i]?.title}\n`);
 	}
-
-	return undefined;
-};
-
-// For displaying execution time of each media item.
-const debugPerformance = function (data: unknown) {
-	if (process.env.NODE_ENV == "benchmark1") {
-		console.log(data);
-	}
+	console.log("Processing Complete.");
 };
