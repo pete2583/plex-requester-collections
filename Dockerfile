@@ -15,4 +15,4 @@ RUN npm install -g tsx
 COPY . .
 
 # Run the raw file directly, ignoring TypeScript warnings
-CMD ["tsx", "index.ts"]
+CMD ["tsx", "src/index.ts"]
