@@ -10,7 +10,7 @@ services:
       - OVERSEERR_API_KEY=${OVERSEERR_API}
       - PLEX_URL=${PLEX_URL}
       - PLEX_TOKEN=${PLEX_TOKEN}
-      - PLEX_INCLUDE_SECTIONS=1,2,3,4 # Optional - Comma-Separated, only process these library sections.
+      - PLEX_INCLUDE_SECTIONS=1,2,3,4,7 # Optional - Comma-Separated, only process these library sections.
       - FEATURE_RUN_ONCE=0 # Optional - 1:Run through once then stop. 0 (default): Repeat every 24h.
       - FEATURE_CREATE_COLLECTIONS=1 # Optional - 1 (default): Make smart collection for each requester. 0: Just do the tagging.
       - START_DELAY_MS=0 # Optional - Number of milliseconds to wait before starting the first pass. Useful if you reboot all containers at the same time.
