@@ -1,16 +1,18 @@
-FROM node:20-slim
+# Use a lightweight Node.js environment
+FROM node:20-alpine
+
+# Set the working directory inside the container
 WORKDIR /usr/src/app
 
-# Install app dependencies
-# A wildcard is used to ensure both package.json AND package-lock.json are copied
-# where available (npm@5+)
+# Copy package files and install dependencies
 COPY package*.json ./
-
 RUN npm install
-# If you are building your code for production
-# RUN npm ci --omit=dev
 
-# Bundle app source
+# Copy the rest of your source code
 COPY . .
 
-CMD [ "node", "dist/index.js" ]
+# THIS IS THE MAGIC LINE: Compile the TypeScript into the /dist/ folder
+RUN npm run build
+
+# Start the application
+CMD ["npm", "start"]
