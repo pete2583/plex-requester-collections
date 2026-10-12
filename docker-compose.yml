@@ -4,8 +4,8 @@ services:
     container_name: plex-requester-collections
     build: .
     environment:
-      - NODE_ENV=development # Optional - 'development' will give verbose logging.
-      - DRY_RUN=true
+      - NODE_ENV=production # Optional - 'development' will give verbose logging.
+      - DRY_RUN=false
       - OVERSEERR_URL=${OVERSEERR_URL}
       - OVERSEERR_API_KEY=${OVERSEERR_API}
       - PLEX_URL=${PLEX_URL}
