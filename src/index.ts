@@ -3,24 +3,10 @@ dotenv.config();
 
 import PlexAPI, { PlexMediaDetails } from "./plex";
 import OverseerrAPI from "./overseerr";
-import TautulliAPI, { TautulliHistoryDetails } from "./tautulli";
-import RadarrAPI, { RadarrMediaDetails } from "./radarr";
-import SonarrAPI, { SonarrSeriesDetails } from "./sonarr";
 import _ from "lodash";
 import moment from "moment";
 
-const TAG_STALE_REQUEST = "stale_request";
-const TAG_REQUESTER_WATCHED = "requester_watched";
-const TAG_OTHERS_WATCHING = "others_watching";
-const TAG_NOT_REQUESTED = "not_requested";
-const TAG_PREFIX_REQUESTER = "requester:";
-const TAG_PREFIX_OWNER = "owner:";
-const COLL_SORT_PREFIX = "zzz_";
-const COLL_DEFAULT_SORT = encodeURIComponent("addedAt:desc");
-const COLL_TITLE_PREFIX_MOVIE = "Movies Requested by ";
-const COLL_TITLE_PREFIX_SHOW = "TV Shows Requested by ";
-const STALE_ADDED_DATE_THRESHOLD = moment().subtract(6, "months");
-const STALE_VIEW_DATE_THRESHOLD = moment().subtract(3, "months");
+const TAG_PREFIX_REQUESTER = "";
 const MS_24_HOURS = 86400000;
 
 // Start after a delay, if set.
